@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMEI Check</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #16181d; --muted: #667085;
+    --line: #e2e5ea; --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101216; --card: #181b21; --text: #e8eaee; --muted: #8b93a1;
+      --line: #2a2e37; --accent: #6ea0ff; --ok: #4ade80; --bad: #f87171; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  textarea {
+    width: 100%; min-height: 96px; padding: 12px; resize: vertical;
+    background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    font: 16px/1.5 ui-monospace, Consolas, monospace;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .bar { display: flex; gap: 8px; align-items: center; margin: 10px 0 20px; flex-wrap: wrap; }
+  button {
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  #summary { margin-left: auto; color: var(--muted); font-size: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--muted);
+    border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
+  }
+  .card.ok { border-left-color: var(--ok); }
+  .card.bad { border-left-color: var(--bad); }
+  .card.warn { border-left-color: var(--warn); }
+  .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .num { font: 600 17px ui-monospace, Consolas, monospace; letter-spacing: .5px; word-break: break-all; }
+  .status { font-weight: 600; font-size: 14px; }
+  .ok .status { color: var(--ok); } .bad .status { color: var(--bad); } .warn .status { color: var(--warn); }
+  .note { color: var(--muted); font-size: 14px; margin-top: 2px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 8px 0 0; font-size: 14px; }
+  dt { color: var(--muted); } dd { margin: 0; font-family: ui-monospace, Consolas, monospace; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 13px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>IMEI Check</h1>
+  <p class="sub">Paste one IMEI per line. Dial <b>*#06#</b> on a phone to see its IMEI.</p>
+
+  <textarea id="input" autofocus spellcheck="false" placeholder="490154203237518"></textarea>
+  <div class="bar">
+    <button id="copy">Copy as CSV</button>
+    <button id="clear">Clear</button>
+    <span id="summary"></span>
+  </div>
+  <div id="results"></div>
+
+  <footer>
+    Runs entirely in your browser — nothing is sent anywhere. This checks that a number is a
+    well-formed IMEI; it cannot tell you whether a phone is blacklisted, stolen or carrier-locked.
+    Make and model come from the <a href="http://tacdb.osmocom.org/">Osmocom TAC database</a>
+    (CC-BY-SA 3.0), which is community-collected and thin on recent phones.
+  </footer>
+</main>
+
+<script src="tacdb.js"></script>
+<script>
+// TAC -> "brand	model"; empty if tacdb.js is missing, the rest of the tool still works.
+const TACDB = window.TACDB || {};
+
+// First two digits of the TAC: the body that allocated it.
+const REPORTING_BODIES = {
+  '01': 'PTCRB (United States)',
+  '10': 'DECT devices',
+  '30': 'Iridium (satellite)',
+  '33': 'DGPT (France)',
+  '35': 'BABT (United Kingdom)',
+  '44': 'BABT (United Kingdom)',
+  '45': 'NTA (Denmark)',
+  '49': 'BZT / BAPT (Germany)',
+  '86': 'TAF (China)',
+  '91': 'MSAI (India)',
+  '98': 'BABT (United Kingdom)',
+  '99': 'GHA (multi-mode 3GPP/3GPP2)',
+};
+
+// Luhn check digit for the first 14 digits of an IMEI.
+function checkDigit(body14) {
+  let sum = 0;
+  for (let i = 0; i < 14; i++) {
+    let d = +body14[i];
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
+function analyze(raw) {
+  const digits = raw.replace(/[\s\-./]/g, '');
+  const r = { input: raw.trim(), digits, level: 'bad', status: 'Invalid', note: '', fields: [] };
+
+  if (/\D/.test(digits)) { r.note = 'Contains characters other than digits.'; return r; }
+  if (![14, 15, 16].includes(digits.length)) {
+    r.note = `${digits.length} digits — an IMEI has 15 (14 without check digit, 16 for IMEISV).`;
+    return r;
+  }
+
+  const tac = digits.slice(0, 8), serial = digits.slice(8, 14);
+  const expected = checkDigit(digits);
+  const [make, model] = (TACDB[tac] || '').split('	');
+  r.make = make || ''; r.model = model || '';
+  r.fields.push(['TAC', tac], ['Serial', serial],
+    ['Make / model', make ? `${make} ${model}`.trim() : 'Not in database']);
+
+  if (digits.length === 15) {
+    r.fields.push(['Check digit', digits[14]]);
+    if (+digits[14] === expected) { r.level = 'ok'; r.status = 'Valid'; }
+    else { r.note = `Check digit should be ${expected} — likely a typo. Corrected: ${digits.slice(0, 14)}${expected}`; }
+  } else if (digits.length === 14) {
+    r.level = 'warn'; r.status = 'Missing check digit';
+    r.note = `Full IMEI: ${digits}${expected}`;
+    r.digits = digits + expected;
+  } else {
+    r.level = 'ok'; r.status = 'IMEISV';
+    r.fields.push(['Software version', digits.slice(14)]);
+    r.note = `IMEISV has no check digit. Equivalent IMEI: ${digits.slice(0, 14)}${expected}`;
+  }
+
+  r.fields.push(['Allocated by', REPORTING_BODIES[tac.slice(0, 2)] || `Unknown (code ${tac.slice(0, 2)})`]);
+
+  // Passes the checksum but is not a real device identity.
+  if (r.level === 'ok' && (/^(\d)\1+$/.test(digits.slice(0, 14)) || /^0{8}/.test(digits))) {
+    r.level = 'warn'; r.status = 'Suspicious';
+    r.note = 'Well-formed, but looks like a placeholder or wiped IMEI.';
+  }
+  return r;
+}
+
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+let results = [];
+
+function render() {
+  const lines = $('input').value.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+  results = lines.map(analyze);
+  const out = $('results');
+  out.replaceChildren();
+
+  for (const r of results) {
+    const card = el('div', `card ${r.level}`);
+    const head = el('div', 'head');
+    head.append(el('span', 'num', r.input), el('span', 'status', r.status));
+    card.append(head);
+    if (r.note) card.append(el('div', 'note', r.note));
+    if (r.fields.length) {
+      const dl = el('dl');
+      for (const [k, v] of r.fields) dl.append(el('dt', '', k), el('dd', '', v));
+      card.append(dl);
+    }
+    out.append(card);
+  }
+
+  const valid = results.filter(r => r.level === 'ok').length;
+  $('summary').textContent = results.length ? `${valid} of ${results.length} valid` : '';
+}
+
+$('input').addEventListener('input', render);
+$('clear').addEventListener('click', () => { $('input').value = ''; render(); $('input').focus(); });
+$('copy').addEventListener('click', async () => {
+  if (!results.length) return;
+  const q = s => `"${String(s).replace(/"/g, '""')}"`;
+  const rows = [['input', 'status', 'tac', 'serial', 'make', 'model', 'note'],
+    ...results.map(r => [r.input, r.status, r.fields[0]?.[1] ?? '', r.fields[1]?.[1] ?? '', r.make ?? '', r.model ?? '', r.note])];
+  await navigator.clipboard.writeText(rows.map(row => row.map(q).join(',')).join('\n'));
+  $('copy').textContent = 'Copied';
+  setTimeout(() => $('copy').textContent = 'Copy as CSV', 1200);
+});
+</script>
+</body>
+</html>
