@@ -29,6 +29,8 @@ Make and model coverage is limited. The bundled database is community-collected,
 
 ## Usage
 
+🖼️ **[View the Live Website](https://wv-web-developers.github.io/imei-check/)**
+
 Download or clone the repository and open `index.html` in any modern browser. Keep `tacdb.js` in the same folder — without it the tool still works, but make and model are not shown.
 
 To find a phone's IMEI, dial `*#06#`.
